@@ -28,6 +28,10 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
 }
 
 export const tauriClient = {
+  selectRepository(): Promise<string | null> {
+    return invokeCommand("select_repository");
+  },
+
   validateRepository(path: string): Promise<RepositoryInfo> {
     return invokeCommand("validate_repository", { path });
   },

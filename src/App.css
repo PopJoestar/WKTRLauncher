@@ -97,6 +97,10 @@ h2 {
   color: #3f5874;
 }
 
+.picker-row {
+  margin-top: 16px;
+}
+
 .path-form {
   margin-top: 18px;
   display: grid;
@@ -123,9 +127,38 @@ button {
   border-color: #1f4e74;
 }
 
+button.secondary {
+  background-color: #f5f9fd;
+  color: #1f4e74;
+}
+
 button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+.recent-block {
+  margin-top: 18px;
+}
+
+.recent-block h3 {
+  margin: 0;
+}
+
+.recent-block ul {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.link-button {
+  width: 100%;
+  text-align: left;
+  border-style: dashed;
+  background-color: #ffffff;
+  color: #16324d;
 }
 
 .status-card {
@@ -162,5 +195,14 @@ button:disabled {
   .app-header {
     align-items: start;
     flex-direction: column;
+  }
+
+  .nav-tabs {
+    width: 100%;
+  }
+
+  .tab {
+    flex: 1;
+    text-align: center;
   }
 }
