@@ -1,6 +1,6 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { tauriClient } from "../lib/tauriClient";
-import type { AppState, RepositoryInfo, WorktreeInfo } from "../models/domain";
+import type { AppState, RepositoryInfo, ScriptInfo, WorktreeInfo } from "../models/domain";
 
 const EMPTY_STATE: AppState = {
   recentRepositories: [],
@@ -10,13 +10,40 @@ function MainPage() {
   const [path, setPath] = useState("");
   const [repository, setRepository] = useState<RepositoryInfo | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
+  const [scripts, setScripts] = useState<ScriptInfo[]>([]);
+  const [selectedWorktreePath, setSelectedWorktreePath] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [appState, setAppState] = useState<AppState>(EMPTY_STATE);
   const [error, setError] = useState<string | null>(null);
   const [worktreeError, setWorktreeError] = useState<string | null>(null);
+  const [scriptError, setScriptError] = useState<string | null>(null);
+  const [launchMessage, setLaunchMessage] = useState<string | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
   const [isRefreshingWorktrees, setIsRefreshingWorktrees] = useState(false);
+  const [isLoadingScripts, setIsLoadingScripts] = useState(false);
+  const [runningScriptName, setRunningScriptName] = useState<string | null>(null);
+
+  const selectedWorktree = useMemo(
+    () => worktrees.find((worktree) => worktree.path === selectedWorktreePath) ?? null,
+    [selectedWorktreePath, worktrees],
+  );
+
+  async function loadScripts(worktreePath: string) {
+    setScriptError(null);
+    setLaunchMessage(null);
+    setIsLoadingScripts(true);
+
+    try {
+      const items = await tauriClient.listScripts(worktreePath);
+      setScripts(items);
+    } catch (loadError) {
+      setScripts([]);
+      setScriptError(loadError instanceof Error ? loadError.message : "Unable to load scripts.");
+    } finally {
+      setIsLoadingScripts(false);
+    }
+  }
 
   async function refreshWorktrees(repositoryPath: string) {
     setWorktreeError(null);
@@ -26,8 +53,21 @@ function MainPage() {
       const items = await tauriClient.listWorktrees(repositoryPath);
       setWorktrees(items);
       setLastRefresh(new Date().toLocaleTimeString());
+
+      if (items.length === 0) {
+        setSelectedWorktreePath(null);
+        setScripts([]);
+        return;
+      }
+
+      const retained = items.find((item) => item.path === selectedWorktreePath);
+      const nextSelected = retained?.path ?? items[0].path;
+      setSelectedWorktreePath(nextSelected);
+      await loadScripts(nextSelected);
     } catch (refreshError) {
       setWorktrees([]);
+      setScripts([]);
+      setSelectedWorktreePath(null);
       setWorktreeError(refreshError instanceof Error ? refreshError.message : "Unable to load worktrees.");
     } finally {
       setIsRefreshingWorktrees(false);
@@ -70,7 +110,7 @@ function MainPage() {
 
     window.addEventListener("focus", handleWindowFocus);
     return () => window.removeEventListener("focus", handleWindowFocus);
-  }, [repository]);
+  }, [repository, selectedWorktreePath]);
 
   async function persistRepositoryState(selectedPath: string, current: AppState): Promise<AppState> {
     const deduped = [selectedPath, ...current.recentRepositories.filter((value) => value !== selectedPath)].slice(0, 8);
@@ -92,12 +132,16 @@ function MainPage() {
       setError("Please choose a repository folder first.");
       setRepository(null);
       setWorktrees([]);
+      setScripts([]);
+      setSelectedWorktreePath(null);
       return;
     }
 
     setError(null);
     setRepository(null);
     setWorktrees([]);
+    setScripts([]);
+    setSelectedWorktreePath(null);
     setIsChecking(true);
 
     try {
@@ -112,6 +156,8 @@ function MainPage() {
     } catch (validationError) {
       setRepository(null);
       setWorktrees([]);
+      setScripts([]);
+      setSelectedWorktreePath(null);
       setError(validationError instanceof Error ? validationError.message : "Unknown validation error");
     } finally {
       setIsChecking(false);
@@ -135,6 +181,27 @@ function MainPage() {
   async function handleValidate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await validateAndPersist(path);
+  }
+
+  async function handleLaunchScript(script: ScriptInfo) {
+    if (!selectedWorktree) return;
+
+    setLaunchMessage(null);
+    setRunningScriptName(script.name);
+
+    try {
+      const result = await tauriClient.runScript({
+        worktreePath: selectedWorktree.path,
+        scriptName: script.name,
+        packageManager: script.packageManager,
+      });
+
+      setLaunchMessage(`Run status for \"${script.name}\": ${result.status}`);
+    } catch (runError) {
+      setLaunchMessage(runError instanceof Error ? runError.message : "Script launch failed.");
+    } finally {
+      setRunningScriptName(null);
+    }
   }
 
   return (
@@ -225,19 +292,78 @@ function MainPage() {
 
           <ul className="worktree-list">
             {worktrees.map((worktree) => (
-              <li key={worktree.path} className="worktree-card">
-                <p>
-                  <strong>{worktree.isMain ? "Main" : "Additional"}</strong>
-                </p>
-                <p>
-                  <span className="subtle">Branch:</span> {worktree.branch}
-                </p>
-                <p>
-                  <span className="subtle">Path:</span> {worktree.path}
-                </p>
+              <li
+                key={worktree.path}
+                className={worktree.path === selectedWorktreePath ? "worktree-card selected" : "worktree-card"}
+              >
+                <button
+                  type="button"
+                  className="worktree-select"
+                  onClick={() => {
+                    setSelectedWorktreePath(worktree.path);
+                    void loadScripts(worktree.path);
+                  }}
+                >
+                  <p>
+                    <strong>{worktree.isMain ? "Main" : "Additional"}</strong>
+                  </p>
+                  <p>
+                    <span className="subtle">Branch:</span> {worktree.branch}
+                  </p>
+                  <p>
+                    <span className="subtle">Path:</span> {worktree.path}
+                  </p>
+                </button>
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {selectedWorktree && (
+        <div className="script-block">
+          <div className="worktree-header">
+            <h3>Scripts for Selected Worktree</h3>
+            <span className="subtle">{selectedWorktree.path}</span>
+          </div>
+
+          {isLoadingScripts && <p className="subtle">Loading scripts...</p>}
+
+          {!isLoadingScripts && scriptError && (
+            <div className="status-card error" role="alert">
+              <h3>Script Discovery Failed</h3>
+              <p>{scriptError}</p>
+            </div>
+          )}
+
+          {!isLoadingScripts && !scriptError && scripts.length === 0 && (
+            <p className="subtle">This worktree has no package scripts in package.json.</p>
+          )}
+
+          {!isLoadingScripts && !scriptError && scripts.length > 0 && (
+            <ul className="script-list">
+              {scripts.map((script) => (
+                <li key={script.name} className="script-card">
+                  <div>
+                    <p>
+                      <strong>{script.name}</strong>
+                    </p>
+                    <p className="subtle">{script.command}</p>
+                    <p className="subtle">Manager: {script.packageManager ?? "npm"}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleLaunchScript(script)}
+                    disabled={runningScriptName === script.name}
+                  >
+                    {runningScriptName === script.name ? "Launching..." : "Run Script"}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {launchMessage && <p className="subtle">{launchMessage}</p>}
         </div>
       )}
     </section>

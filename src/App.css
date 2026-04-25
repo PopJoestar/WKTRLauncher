@@ -195,13 +195,51 @@ button:disabled {
 .worktree-card {
   border: 1px solid #d2deeb;
   border-radius: 12px;
-  padding: 12px;
   background-color: #fff;
+}
+
+.worktree-card.selected {
+  border-color: #1f4e74;
+  box-shadow: 0 0 0 2px #d5e6f8 inset;
+}
+
+.worktree-select {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 12px;
 }
 
 .worktree-card p {
   margin: 4px 0;
   overflow-wrap: anywhere;
+}
+
+.script-block {
+  margin-top: 20px;
+  display: grid;
+  gap: 10px;
+}
+
+.script-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.script-card {
+  border: 1px solid #d2deeb;
+  border-radius: 12px;
+  padding: 12px;
+  background-color: #fff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
 }
 
 .status-card {
@@ -255,6 +293,11 @@ button:disabled {
   }
 
   .worktree-header {
+    flex-direction: column;
+    align-items: start;
+  }
+
+  .script-card {
     flex-direction: column;
     align-items: start;
   }
