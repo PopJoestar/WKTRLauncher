@@ -1,0 +1,166 @@
+:root {
+  font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+  line-height: 1.45;
+  font-weight: 400;
+  color: #102338;
+  background: radial-gradient(circle at 10% 10%, #d5f3ed, #f5efe3 48%, #d8e7ff 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.app-shell {
+  margin: 0 auto;
+  max-width: 960px;
+  display: grid;
+  gap: 18px;
+}
+
+.app-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-size: 0.72rem;
+  color: #4d5f6f;
+}
+
+h1 {
+  margin: 2px 0 0;
+  font-size: clamp(1.5rem, 2.6vw, 2.25rem);
+}
+
+.nav-tabs {
+  display: flex;
+  gap: 8px;
+  background: #ffffff90;
+  backdrop-filter: blur(10px);
+  border-radius: 999px;
+  padding: 5px;
+  border: 1px solid #ffffff;
+}
+
+.tab {
+  border-radius: 999px;
+  padding: 8px 16px;
+  color: #29405c;
+  text-decoration: none;
+  font-weight: 600;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.tab:hover {
+  background-color: #e1ecf8;
+}
+
+.tab.active {
+  background-color: #102338;
+  color: #f7f8fa;
+}
+
+.panel {
+  background: #ffffffcf;
+  border: 1px solid #ffffff;
+  border-radius: 16px;
+  padding: 22px;
+  box-shadow: 0 14px 35px rgba(24, 40, 67, 0.12);
+}
+
+h2 {
+  margin: 0;
+}
+
+.panel-copy {
+  margin: 8px 0 0;
+  color: #3f5874;
+}
+
+.path-form {
+  margin-top: 18px;
+  display: grid;
+  gap: 10px;
+}
+
+label {
+  font-weight: 600;
+}
+
+input,
+button {
+  border: 1px solid #c0d1e4;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+}
+
+button {
+  width: fit-content;
+  cursor: pointer;
+  background-color: #1f4e74;
+  color: #f3f7fb;
+  border-color: #1f4e74;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.status-card {
+  margin-top: 18px;
+  border-radius: 14px;
+  padding: 14px;
+  border: 1px solid;
+}
+
+.status-card h3 {
+  margin: 0 0 8px;
+}
+
+.status-card p {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+
+.status-card.success {
+  background-color: #eefcf6;
+  border-color: #a6e3c3;
+}
+
+.status-card.error {
+  background-color: #fff1f1;
+  border-color: #ffbdbd;
+}
+
+@media (max-width: 720px) {
+  #root {
+    padding: 12px;
+  }
+
+  .app-header {
+    align-items: start;
+    flex-direction: column;
+  }
+}
