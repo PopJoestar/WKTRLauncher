@@ -4,7 +4,7 @@ mod models;
 
 use commands::app_state::{get_app_state, save_app_state, AppStateStore};
 use commands::repository::{select_repository, validate_repository};
-use commands::script::{list_scripts, run_script};
+use commands::script::{list_scripts, run_script, ScriptRunStore};
 use commands::worktree::list_worktrees;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -12,6 +12,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(AppStateStore::load(app.handle()));
+            app.manage(ScriptRunStore::default());
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())

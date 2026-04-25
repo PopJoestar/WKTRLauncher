@@ -1,9 +1,18 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { tauriClient } from "../lib/tauriClient";
-import type { AppState, RepositoryInfo, ScriptInfo, WorktreeInfo } from "../models/domain";
+import type { AppState, RepositoryInfo, ScriptInfo, ScriptRunEvent, ScriptRunStatus, WorktreeInfo } from "../models/domain";
 
 const EMPTY_STATE: AppState = {
   recentRepositories: [],
+};
+
+type RunSummary = {
+  runId: string;
+  scriptName: string;
+  worktreePath: string;
+  status: string;
+  exitCode?: number;
+  finishedAt?: string;
 };
 
 function MainPage() {
@@ -18,16 +27,36 @@ function MainPage() {
   const [worktreeError, setWorktreeError] = useState<string | null>(null);
   const [scriptError, setScriptError] = useState<string | null>(null);
   const [launchMessage, setLaunchMessage] = useState<string | null>(null);
+  const [runLogs, setRunLogs] = useState<string[]>([]);
+  const [runSummaries, setRunSummaries] = useState<RunSummary[]>([]);
   const [isChecking, setIsChecking] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
   const [isRefreshingWorktrees, setIsRefreshingWorktrees] = useState(false);
   const [isLoadingScripts, setIsLoadingScripts] = useState(false);
-  const [runningScriptName, setRunningScriptName] = useState<string | null>(null);
+  const [runningRunKey, setRunningRunKey] = useState<string | null>(null);
 
   const selectedWorktree = useMemo(
     () => worktrees.find((worktree) => worktree.path === selectedWorktreePath) ?? null,
     [selectedWorktreePath, worktrees],
   );
+
+  useEffect(() => {
+    let active = true;
+    let cleanup: (() => void) | null = null;
+
+    void tauriClient.onScriptRunOutput((event: ScriptRunEvent) => {
+      if (!active) return;
+      const line = `[${event.stream}] ${event.line}`;
+      setRunLogs((previous) => [...previous.slice(-249), line]);
+    }).then((unlisten) => {
+      cleanup = unlisten;
+    });
+
+    return () => {
+      active = false;
+      if (cleanup) cleanup();
+    };
+  }, []);
 
   async function loadScripts(worktreePath: string) {
     setScriptError(null);
@@ -187,20 +216,32 @@ function MainPage() {
     if (!selectedWorktree) return;
 
     setLaunchMessage(null);
-    setRunningScriptName(script.name);
+    setRunLogs([]);
+
+    const runKey = `${selectedWorktree.path}::${script.name}`;
+    setRunningRunKey(runKey);
 
     try {
-      const result = await tauriClient.runScript({
+      const result: ScriptRunStatus = await tauriClient.runScript({
         worktreePath: selectedWorktree.path,
         scriptName: script.name,
         packageManager: script.packageManager,
       });
 
       setLaunchMessage(`Run status for \"${script.name}\": ${result.status}`);
+      const summary: RunSummary = {
+        runId: result.runId,
+        scriptName: script.name,
+        worktreePath: selectedWorktree.path,
+        status: result.status,
+        exitCode: result.exitCode,
+        finishedAt: result.finishedAt,
+      };
+      setRunSummaries((previous) => [summary, ...previous].slice(0, 12));
     } catch (runError) {
       setLaunchMessage(runError instanceof Error ? runError.message : "Script launch failed.");
     } finally {
-      setRunningScriptName(null);
+      setRunningRunKey(null);
     }
   }
 
@@ -354,9 +395,9 @@ function MainPage() {
                   <button
                     type="button"
                     onClick={() => void handleLaunchScript(script)}
-                    disabled={runningScriptName === script.name}
+                    disabled={runningRunKey === `${selectedWorktree.path}::${script.name}`}
                   >
-                    {runningScriptName === script.name ? "Launching..." : "Run Script"}
+                    {runningRunKey === `${selectedWorktree.path}::${script.name}` ? "Running..." : "Run Script"}
                   </button>
                 </li>
               ))}
@@ -364,6 +405,27 @@ function MainPage() {
           )}
 
           {launchMessage && <p className="subtle">{launchMessage}</p>}
+
+          {runLogs.length > 0 && (
+            <div className="console-block">
+              <h4>Run Console</h4>
+              <pre>{runLogs.join("\n")}</pre>
+            </div>
+          )}
+
+          {runSummaries.length > 0 && (
+            <div className="summary-block">
+              <h4>Recent Runs</h4>
+              <ul>
+                {runSummaries.map((summary) => (
+                  <li key={summary.runId}>
+                    <strong>{summary.scriptName}</strong> - {summary.status}
+                    {summary.exitCode !== undefined ? ` (exit: ${summary.exitCode})` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
     </section>

@@ -242,6 +242,34 @@ button:disabled {
   gap: 12px;
 }
 
+.console-block,
+.summary-block {
+  margin-top: 8px;
+}
+
+.console-block h4,
+.summary-block h4 {
+  margin: 0 0 8px;
+}
+
+.console-block pre {
+  margin: 0;
+  border: 1px solid #d2deeb;
+  border-radius: 12px;
+  background: #0f1d2b;
+  color: #e2f1ff;
+  padding: 10px;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.summary-block ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
 .status-card {
   margin-top: 18px;
   border-radius: 14px;

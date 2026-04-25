@@ -44,6 +44,17 @@ pub struct ScriptRunStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ScriptRunEvent {
+    pub run_id: String,
+    pub worktree_path: String,
+    pub script_name: String,
+    pub stream: String,
+    pub line: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppState {
     pub last_repository_path: Option<String>,
     pub recent_repositories: Vec<String>,
