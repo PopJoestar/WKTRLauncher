@@ -161,6 +161,49 @@ button:disabled {
   color: #16324d;
 }
 
+.worktree-block {
+  margin-top: 20px;
+  display: grid;
+  gap: 10px;
+}
+
+.worktree-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.worktree-header h3 {
+  margin: 0;
+}
+
+.worktree-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.worktree-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.worktree-card {
+  border: 1px solid #d2deeb;
+  border-radius: 12px;
+  padding: 12px;
+  background-color: #fff;
+}
+
+.worktree-card p {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+
 .status-card {
   margin-top: 18px;
   border-radius: 14px;
@@ -187,6 +230,11 @@ button:disabled {
   border-color: #ffbdbd;
 }
 
+.subtle {
+  color: #4d5f6f;
+  font-size: 0.9rem;
+}
+
 @media (max-width: 720px) {
   #root {
     padding: 12px;
@@ -204,5 +252,10 @@ button:disabled {
   .tab {
     flex: 1;
     text-align: center;
+  }
+
+  .worktree-header {
+    flex-direction: column;
+    align-items: start;
   }
 }

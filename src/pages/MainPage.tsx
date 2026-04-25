@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { tauriClient } from "../lib/tauriClient";
-import type { AppState, RepositoryInfo } from "../models/domain";
+import type { AppState, RepositoryInfo, WorktreeInfo } from "../models/domain";
 
 const EMPTY_STATE: AppState = {
   recentRepositories: [],
@@ -9,10 +9,30 @@ const EMPTY_STATE: AppState = {
 function MainPage() {
   const [path, setPath] = useState("");
   const [repository, setRepository] = useState<RepositoryInfo | null>(null);
+  const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
+  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [appState, setAppState] = useState<AppState>(EMPTY_STATE);
   const [error, setError] = useState<string | null>(null);
+  const [worktreeError, setWorktreeError] = useState<string | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
+  const [isRefreshingWorktrees, setIsRefreshingWorktrees] = useState(false);
+
+  async function refreshWorktrees(repositoryPath: string) {
+    setWorktreeError(null);
+    setIsRefreshingWorktrees(true);
+
+    try {
+      const items = await tauriClient.listWorktrees(repositoryPath);
+      setWorktrees(items);
+      setLastRefresh(new Date().toLocaleTimeString());
+    } catch (refreshError) {
+      setWorktrees([]);
+      setWorktreeError(refreshError instanceof Error ? refreshError.message : "Unable to load worktrees.");
+    } finally {
+      setIsRefreshingWorktrees(false);
+    }
+  }
 
   useEffect(() => {
     let isMounted = true;
@@ -41,6 +61,17 @@ function MainPage() {
     };
   }, []);
 
+  useEffect(() => {
+    function handleWindowFocus() {
+      if (repository) {
+        void refreshWorktrees(repository.path);
+      }
+    }
+
+    window.addEventListener("focus", handleWindowFocus);
+    return () => window.removeEventListener("focus", handleWindowFocus);
+  }, [repository]);
+
   async function persistRepositoryState(selectedPath: string, current: AppState): Promise<AppState> {
     const deduped = [selectedPath, ...current.recentRepositories.filter((value) => value !== selectedPath)].slice(0, 8);
 
@@ -60,23 +91,27 @@ function MainPage() {
     if (!trimmedPath) {
       setError("Please choose a repository folder first.");
       setRepository(null);
+      setWorktrees([]);
       return;
     }
 
     setError(null);
     setRepository(null);
+    setWorktrees([]);
     setIsChecking(true);
 
     try {
       const result = await tauriClient.validateRepository(trimmedPath);
       setRepository(result);
       setPath(result.path);
+      await refreshWorktrees(result.path);
 
       if (shouldPersist) {
         await persistRepositoryState(result.path, currentState ?? appState);
       }
     } catch (validationError) {
       setRepository(null);
+      setWorktrees([]);
       setError(validationError instanceof Error ? validationError.message : "Unknown validation error");
     } finally {
       setIsChecking(false);
@@ -159,6 +194,50 @@ function MainPage() {
         <div className="status-card error" role="alert">
           <h3>Validation Failed</h3>
           <p>{error}</p>
+        </div>
+      )}
+
+      {repository && (
+        <div className="worktree-block">
+          <div className="worktree-header">
+            <h3>Worktrees</h3>
+            <div className="worktree-actions">
+              {lastRefresh && <span className="subtle">Last refresh: {lastRefresh}</span>}
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void refreshWorktrees(repository.path)}
+                disabled={isRefreshingWorktrees}
+              >
+                {isRefreshingWorktrees ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+          </div>
+
+          {worktreeError && (
+            <div className="status-card error" role="alert">
+              <h3>Worktree Refresh Failed</h3>
+              <p>{worktreeError}</p>
+            </div>
+          )}
+
+          {!worktreeError && worktrees.length === 0 && <p className="subtle">No worktrees found.</p>}
+
+          <ul className="worktree-list">
+            {worktrees.map((worktree) => (
+              <li key={worktree.path} className="worktree-card">
+                <p>
+                  <strong>{worktree.isMain ? "Main" : "Additional"}</strong>
+                </p>
+                <p>
+                  <span className="subtle">Branch:</span> {worktree.branch}
+                </p>
+                <p>
+                  <span className="subtle">Path:</span> {worktree.path}
+                </p>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </section>
