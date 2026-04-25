@@ -16,10 +16,16 @@ export interface ScriptInfo {
   packageManager?: string;
 }
 
+export interface LaunchConfig {
+  scriptName: string;
+  port: number;
+}
+
 export interface ScriptRunRequest {
   worktreePath: string;
   scriptName: string;
   packageManager?: string;
+  port?: number;
 }
 
 export interface ScriptRunStatus {
@@ -31,19 +37,11 @@ export interface ScriptRunStatus {
   finishedAt?: string;
 }
 
-export interface ScriptFinishedEvent {
-  runId: string;
-  runKey: string;
-  worktreePath: string;
-  scriptName: string;
-  exitCode?: number;
-  finishedAt: string;
-}
-
 export interface AppState {
   lastRepositoryPath?: string;
   recentRepositories: string[];
   preferredPackageManager?: string;
+  launchConfigs: Record<string, LaunchConfig>;
 }
 
 export interface ErrorPayload {
@@ -64,4 +62,13 @@ export interface ScriptRunEvent {
   stream: "stdout" | "stderr";
   line: string;
   timestamp: string;
+}
+
+export interface ScriptFinishedEvent {
+  runId: string;
+  runKey: string;
+  worktreePath: string;
+  scriptName: string;
+  exitCode?: number;
+  finishedAt: string;
 }

@@ -141,6 +141,10 @@ pub fn run_script(
         .stderr(Stdio::piped())
         .process_group(0);
 
+    if let Some(port) = request.port {
+        command.env("PORT", port.to_string());
+    }
+
     let mut child = match command.spawn() {
         Ok(value) => value,
         Err(_) => {

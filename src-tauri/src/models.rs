@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,10 +28,18 @@ pub struct ScriptInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LaunchConfig {
+    pub script_name: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScriptRunRequest {
     pub worktree_path: String,
     pub script_name: String,
     pub package_manager: Option<String>,
+    pub port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +81,8 @@ pub struct AppState {
     pub last_repository_path: Option<String>,
     pub recent_repositories: Vec<String>,
     pub preferred_package_manager: Option<String>,
+    #[serde(default)]
+    pub launch_configs: HashMap<String, LaunchConfig>,
 }
 
 impl Default for AppState {
@@ -79,6 +91,7 @@ impl Default for AppState {
             last_repository_path: None,
             recent_repositories: Vec::new(),
             preferred_package_manager: None,
+            launch_configs: HashMap::new(),
         }
     }
 }

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { openUrl as pluginOpenUrl } from "@tauri-apps/plugin-opener";
 import type {
   AppState,
   CommandResponse,
@@ -59,6 +60,10 @@ export const tauriClient = {
 
   saveAppState(state: AppState): Promise<AppState> {
     return invokeCommand("save_app_state", { state });
+  },
+
+  openUrl(url: string): Promise<void> {
+    return pluginOpenUrl(url);
   },
 
   onScriptRunOutput(handler: (event: ScriptRunEvent) => void): Promise<UnlistenFn> {

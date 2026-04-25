@@ -1,98 +1,51 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import {
-  APP_STATE_UPDATED_EVENT,
-  RUN_CACHE_CLEARED_EVENT,
-  RUN_LOG_CACHE_KEY,
-  RUN_SUMMARY_CACHE_KEY,
-} from "../lib/cacheKeys";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { APP_STATE_UPDATED_EVENT } from "../lib/cacheKeys";
 import { tauriClient } from "../lib/tauriClient";
-import type { AppState, RepositoryInfo, ScriptFinishedEvent, ScriptInfo, ScriptRunEvent, WorktreeInfo } from "../models/domain";
+import type {
+  AppState,
+  LaunchConfig,
+  RepositoryInfo,
+  ScriptFinishedEvent,
+  ScriptInfo,
+  ScriptRunEvent,
+  WorktreeInfo,
+} from "../models/domain";
+
+type RunningInfo = { runKey: string; runId: string; port: number; branch: string };
+type FormDraft = { scriptName: string; port: string };
+type Toast = { id: string; branch: string; scriptName: string; exitCode: number };
 
 const EMPTY_STATE: AppState = {
   recentRepositories: [],
-};
-
-const RISK_PATTERNS = [/clean/i, /reset/i, /migrate/i, /drop/i, /destroy/i];
-
-type RunSummary = {
-  runId: string;
-  scriptName: string;
-  worktreePath: string;
-  status: string;
-  exitCode?: number;
-  finishedAt?: string;
-};
-
-type PendingConfirmation = {
-  script: ScriptInfo;
-  effectiveManager: string;
+  launchConfigs: {},
 };
 
 function MainPage() {
   const [path, setPath] = useState("");
   const [repository, setRepository] = useState<RepositoryInfo | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
-  const [scripts, setScripts] = useState<ScriptInfo[]>([]);
-  const [selectedWorktreePath, setSelectedWorktreePath] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [appState, setAppState] = useState<AppState>(EMPTY_STATE);
   const [error, setError] = useState<string | null>(null);
   const [worktreeError, setWorktreeError] = useState<string | null>(null);
-  const [scriptError, setScriptError] = useState<string | null>(null);
-  const [launchMessage, setLaunchMessage] = useState<string | null>(null);
-  const [runLogs, setRunLogs] = useState<string[]>([]);
-  const [runSummaries, setRunSummaries] = useState<RunSummary[]>([]);
-  const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
   const [isRefreshingWorktrees, setIsRefreshingWorktrees] = useState(false);
-  const [isLoadingScripts, setIsLoadingScripts] = useState(false);
-  const [runningRunKey, setRunningRunKey] = useState<string | null>(null);
+  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
 
-  const selectedWorktree = useMemo(
-    () => worktrees.find((worktree) => worktree.path === selectedWorktreePath) ?? null,
-    [selectedWorktreePath, worktrees],
-  );
-
-  useEffect(() => {
-    try {
-      const rawLogs = localStorage.getItem(RUN_LOG_CACHE_KEY);
-      if (rawLogs) setRunLogs(JSON.parse(rawLogs) as string[]);
-      const rawSummary = localStorage.getItem(RUN_SUMMARY_CACHE_KEY);
-      if (rawSummary) setRunSummaries(JSON.parse(rawSummary) as RunSummary[]);
-    } catch {
-      setRunLogs([]);
-      setRunSummaries([]);
-    }
-  }, []);
+  const [runningWorktrees, setRunningWorktrees] = useState<Record<string, RunningInfo>>({});
+  const runningWorktreesRef = useRef<Record<string, RunningInfo>>({});
+  const [lastRunIds, setLastRunIds] = useState<Record<string, string>>({});
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [openForms, setOpenForms] = useState<Record<string, boolean>>({});
+  const [formDrafts, setFormDrafts] = useState<Record<string, FormDraft>>({});
+  const [worktreeScripts, setWorktreeScripts] = useState<Record<string, ScriptInfo[]>>({});
+  const [loadingScripts, setLoadingScripts] = useState<Record<string, boolean>>({});
+  const [launchErrors, setLaunchErrors] = useState<Record<string, string | null>>({});
+  const [worktreeLogs, setWorktreeLogs] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
-    localStorage.setItem(RUN_LOG_CACHE_KEY, JSON.stringify(runLogs.slice(-250)));
-  }, [runLogs]);
-
-  useEffect(() => {
-    localStorage.setItem(RUN_SUMMARY_CACHE_KEY, JSON.stringify(runSummaries.slice(0, 12)));
-  }, [runSummaries]);
-
-  useEffect(() => {
-    function handleRunCacheCleared() {
-      setRunLogs([]);
-      setRunSummaries([]);
-      setLaunchMessage("Run cache was cleared from Settings.");
-    }
-
-    function handleStateUpdated() {
-      void tauriClient.getAppState().then(setAppState);
-    }
-
-    window.addEventListener(RUN_CACHE_CLEARED_EVENT, handleRunCacheCleared);
-    window.addEventListener(APP_STATE_UPDATED_EVENT, handleStateUpdated);
-
-    return () => {
-      window.removeEventListener(RUN_CACHE_CLEARED_EVENT, handleRunCacheCleared);
-      window.removeEventListener(APP_STATE_UPDATED_EVENT, handleStateUpdated);
-    };
-  }, []);
+    runningWorktreesRef.current = runningWorktrees;
+  }, [runningWorktrees]);
 
   useEffect(() => {
     let active = true;
@@ -101,8 +54,10 @@ function MainPage() {
     void tauriClient
       .onScriptRunOutput((event: ScriptRunEvent) => {
         if (!active) return;
-        const line = `[${event.stream}] ${event.line}`;
-        setRunLogs((previous) => [...previous.slice(-249), line]);
+        setWorktreeLogs((prev) => ({
+          ...prev,
+          [event.runId]: [...(prev[event.runId] ?? []).slice(-199), `[${event.stream}] ${event.line}`],
+        }));
       })
       .then((unlisten) => {
         cleanup = unlisten;
@@ -121,18 +76,53 @@ function MainPage() {
     void tauriClient
       .onScriptRunFinished((event: ScriptFinishedEvent) => {
         if (!active) return;
-        setRunningRunKey((current) => (current === event.runKey ? null : current));
-        const exitInfo = event.exitCode !== undefined ? ` (exit: ${event.exitCode})` : "";
-        setLaunchMessage(`Script "${event.scriptName}" finished${exitInfo}.`);
-        const summary: RunSummary = {
-          runId: event.runId,
-          scriptName: event.scriptName,
-          worktreePath: event.worktreePath,
-          status: event.exitCode === 0 ? "completed" : "failed",
-          exitCode: event.exitCode,
-          finishedAt: event.finishedAt,
-        };
-        setRunSummaries((previous) => [summary, ...previous].slice(0, 12));
+
+        let matchedPath: string | null = null;
+        let matchedInfo: RunningInfo | null = null;
+
+        for (const [worktreePath, info] of Object.entries(runningWorktreesRef.current)) {
+          if (info.runKey === event.runKey) {
+            matchedPath = worktreePath;
+            matchedInfo = info;
+            break;
+          }
+        }
+
+        if (!matchedPath) return;
+
+        setRunningWorktrees((prev) => {
+          const updated = { ...prev };
+          delete updated[matchedPath!];
+          return updated;
+        });
+
+        setLastRunIds((prev) => ({ ...prev, [matchedPath!]: event.runId }));
+
+        const crashed =
+          event.exitCode !== null && event.exitCode !== undefined && event.exitCode !== 0;
+
+        if (crashed) {
+          setLaunchErrors((prev) => ({
+            ...prev,
+            [matchedPath!]: `Server exited with code ${event.exitCode}. See "Last run output" below.`,
+          }));
+
+          const toastId = `${Date.now()}`;
+          setToasts((prev) => [
+            ...prev,
+            {
+              id: toastId,
+              branch: matchedInfo!.branch,
+              scriptName: event.scriptName,
+              exitCode: event.exitCode!,
+            },
+          ]);
+          setTimeout(() => {
+            setToasts((prev) => prev.filter((t) => t.id !== toastId));
+          }, 10000);
+        } else {
+          setLaunchErrors((prev) => ({ ...prev, [matchedPath!]: null }));
+        }
       })
       .then((unlisten) => {
         cleanup = unlisten;
@@ -144,51 +134,6 @@ function MainPage() {
     };
   }, []);
 
-  async function loadScripts(worktreePath: string) {
-    setScriptError(null);
-    setLaunchMessage(null);
-    setIsLoadingScripts(true);
-
-    try {
-      const items = await tauriClient.listScripts(worktreePath);
-      setScripts(items);
-    } catch (loadError) {
-      setScripts([]);
-      setScriptError(toFriendlyMessage(loadError));
-    } finally {
-      setIsLoadingScripts(false);
-    }
-  }
-
-  async function refreshWorktrees(repositoryPath: string) {
-    setWorktreeError(null);
-    setIsRefreshingWorktrees(true);
-
-    try {
-      const items = await tauriClient.listWorktrees(repositoryPath);
-      setWorktrees(items);
-      setLastRefresh(new Date().toLocaleTimeString());
-
-      if (items.length === 0) {
-        setSelectedWorktreePath(null);
-        setScripts([]);
-        return;
-      }
-
-      const retained = items.find((item) => item.path === selectedWorktreePath);
-      const nextSelected = retained?.path ?? items[0].path;
-      setSelectedWorktreePath(nextSelected);
-      await loadScripts(nextSelected);
-    } catch (refreshError) {
-      setWorktrees([]);
-      setScripts([]);
-      setSelectedWorktreePath(null);
-      setWorktreeError(toFriendlyMessage(refreshError));
-    } finally {
-      setIsRefreshingWorktrees(false);
-    }
-  }
-
   useEffect(() => {
     let isMounted = true;
 
@@ -196,46 +141,55 @@ function MainPage() {
       try {
         const savedState = await tauriClient.getAppState();
         if (!isMounted) return;
-
         setAppState(savedState);
         if (!savedState.lastRepositoryPath) return;
-
         setPath(savedState.lastRepositoryPath);
         await validateAndPersist(savedState.lastRepositoryPath, savedState, false);
       } catch {
-        if (isMounted) {
-          setError("Could not restore previous repository state.");
-        }
+        // silently skip
       }
     }
 
     void restoreState();
-
     return () => {
       isMounted = false;
     };
   }, []);
 
   useEffect(() => {
-    function handleWindowFocus() {
-      if (repository) {
-        void refreshWorktrees(repository.path);
-      }
+    function handleFocus() {
+      if (repository) void refreshWorktrees(repository.path);
     }
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [repository]);
 
-    window.addEventListener("focus", handleWindowFocus);
-    return () => window.removeEventListener("focus", handleWindowFocus);
-  }, [repository, selectedWorktreePath]);
+  useEffect(() => {
+    function handleStateUpdated() {
+      void tauriClient.getAppState().then(setAppState);
+    }
+    window.addEventListener(APP_STATE_UPDATED_EVENT, handleStateUpdated);
+    return () => window.removeEventListener(APP_STATE_UPDATED_EVENT, handleStateUpdated);
+  }, []);
+
+  async function refreshWorktrees(repositoryPath: string) {
+    setWorktreeError(null);
+    setIsRefreshingWorktrees(true);
+    try {
+      const items = await tauriClient.listWorktrees(repositoryPath);
+      setWorktrees(items);
+      setLastRefresh(new Date().toLocaleTimeString());
+    } catch (err) {
+      setWorktrees([]);
+      setWorktreeError(toFriendlyMessage(err));
+    } finally {
+      setIsRefreshingWorktrees(false);
+    }
+  }
 
   async function persistRepositoryState(selectedPath: string, current: AppState): Promise<AppState> {
-    const deduped = [selectedPath, ...current.recentRepositories.filter((value) => value !== selectedPath)].slice(0, 8);
-
-    const nextState: AppState = {
-      ...current,
-      lastRepositoryPath: selectedPath,
-      recentRepositories: deduped,
-    };
-
+    const deduped = [selectedPath, ...current.recentRepositories.filter((v) => v !== selectedPath)].slice(0, 8);
+    const nextState: AppState = { ...current, lastRepositoryPath: selectedPath, recentRepositories: deduped };
     const saved = await tauriClient.saveAppState(nextState);
     setAppState(saved);
     return saved;
@@ -247,17 +201,12 @@ function MainPage() {
       setError("Please choose a repository folder first.");
       setRepository(null);
       setWorktrees([]);
-      setScripts([]);
-      setSelectedWorktreePath(null);
       return;
     }
 
     setError(null);
     setRepository(null);
     setWorktrees([]);
-    setScripts([]);
-    setSelectedWorktreePath(null);
-    setPendingConfirmation(null);
     setIsChecking(true);
 
     try {
@@ -265,16 +214,13 @@ function MainPage() {
       setRepository(result);
       setPath(result.path);
       await refreshWorktrees(result.path);
-
       if (shouldPersist) {
         await persistRepositoryState(result.path, currentState ?? appState);
       }
-    } catch (validationError) {
+    } catch (err) {
       setRepository(null);
       setWorktrees([]);
-      setScripts([]);
-      setSelectedWorktreePath(null);
-      setError(toFriendlyMessage(validationError));
+      setError(toFriendlyMessage(err));
     } finally {
       setIsChecking(false);
     }
@@ -294,57 +240,127 @@ function MainPage() {
     }
   }
 
-  async function handleValidate(event: FormEvent<HTMLFormElement>) {
+  function handleValidate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await validateAndPersist(path);
+    void validateAndPersist(path);
   }
 
-  async function executeScriptLaunch(script: ScriptInfo, effectiveManager: string) {
-    if (!selectedWorktree) return;
+  async function openLaunchForm(worktree: WorktreeInfo) {
+    const existing = appState.launchConfigs[worktree.path];
+    const suggestedPort = existing?.port ?? suggestNextPort(appState.launchConfigs);
 
-    setLaunchMessage(null);
-    setRunLogs([]);
+    setOpenForms((prev) => ({ ...prev, [worktree.path]: true }));
+    setFormDrafts((prev) => ({
+      ...prev,
+      [worktree.path]: {
+        scriptName: existing?.scriptName ?? "",
+        port: String(suggestedPort),
+      },
+    }));
+    setLaunchErrors((prev) => ({ ...prev, [worktree.path]: null }));
 
-    try {
-      const result = await tauriClient.runScript({
-        worktreePath: selectedWorktree.path,
-        scriptName: script.name,
-        packageManager: effectiveManager,
-      });
-
-      setRunningRunKey(result.runKey);
-      setLaunchMessage(`Script "${script.name}" started.`);
-    } catch (runError) {
-      setRunningRunKey(null);
-      setLaunchMessage(toFriendlyMessage(runError));
+    if (!worktreeScripts[worktree.path]) {
+      setLoadingScripts((prev) => ({ ...prev, [worktree.path]: true }));
+      try {
+        const scripts = await tauriClient.listScripts(worktree.path);
+        setWorktreeScripts((prev) => ({ ...prev, [worktree.path]: scripts }));
+        if (!existing?.scriptName && scripts.length > 0) {
+          const devScript = scripts.find((s) => s.name === "dev") ?? scripts[0];
+          setFormDrafts((prev) => ({
+            ...prev,
+            [worktree.path]: { ...prev[worktree.path], scriptName: devScript.name },
+          }));
+        }
+      } catch {
+        // user can type manually
+      } finally {
+        setLoadingScripts((prev) => ({ ...prev, [worktree.path]: false }));
+      }
     }
   }
 
-  async function handleStopScript() {
-    if (!runningRunKey) return;
-    try {
-      await tauriClient.stopScript(runningRunKey);
-    } catch {
-      setLaunchMessage("Failed to stop the script.");
-    }
+  function closeLaunchForm(worktreePath: string) {
+    setOpenForms((prev) => ({ ...prev, [worktreePath]: false }));
   }
 
-  function handleLaunchRequest(script: ScriptInfo) {
-    if (!selectedWorktree) return;
-    const effectiveManager = appState.preferredPackageManager ?? script.packageManager ?? "npm";
+  function updateDraft(worktreePath: string, field: Partial<FormDraft>) {
+    setFormDrafts((prev) => ({
+      ...prev,
+      [worktreePath]: { ...prev[worktreePath], ...field },
+    }));
+  }
 
-    if (isRiskyScript(script.name)) {
-      setPendingConfirmation({ script, effectiveManager });
+  async function handleLaunch(worktree: WorktreeInfo) {
+    const draft = formDrafts[worktree.path];
+    if (!draft?.scriptName.trim()) {
+      setLaunchErrors((prev) => ({ ...prev, [worktree.path]: "Select a script to run." }));
+      return;
+    }
+    const port = parseInt(draft.port, 10);
+    if (!port || port < 1024 || port > 65535) {
+      setLaunchErrors((prev) => ({ ...prev, [worktree.path]: "Enter a valid port number (1024–65535)." }));
       return;
     }
 
-    void executeScriptLaunch(script, effectiveManager);
+    setLaunchErrors((prev) => ({ ...prev, [worktree.path]: null }));
+
+    const updatedState: AppState = {
+      ...appState,
+      launchConfigs: {
+        ...appState.launchConfigs,
+        [worktree.path]: { scriptName: draft.scriptName, port },
+      },
+    };
+    const saved = await tauriClient.saveAppState(updatedState);
+    setAppState(saved);
+    setOpenForms((prev) => ({ ...prev, [worktree.path]: false }));
+
+    await launchWorktree(worktree, draft.scriptName, port, saved);
+  }
+
+  async function launchWorktree(worktree: WorktreeInfo, scriptName: string, port: number, currentState?: AppState) {
+    const state = currentState ?? appState;
+    setLaunchErrors((prev) => ({ ...prev, [worktree.path]: null }));
+    setLastRunIds((prev) => {
+      const updated = { ...prev };
+      delete updated[worktree.path];
+      return updated;
+    });
+    try {
+      const result = await tauriClient.runScript({
+        worktreePath: worktree.path,
+        scriptName,
+        packageManager: state.preferredPackageManager,
+        port,
+      });
+      setRunningWorktrees((prev) => ({
+        ...prev,
+        [worktree.path]: { runKey: result.runKey, runId: result.runId, port, branch: worktree.branch },
+      }));
+    } catch (err) {
+      setLaunchErrors((prev) => ({ ...prev, [worktree.path]: toFriendlyMessage(err) }));
+    }
+  }
+
+  function dismissToast(id: string) {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }
+
+  async function handleStop(worktree: WorktreeInfo) {
+    const running = runningWorktrees[worktree.path];
+    if (!running) return;
+    try {
+      await tauriClient.stopScript(running.runKey);
+    } catch {
+      // process cleanup handled by script-run-finished event
+    }
   }
 
   return (
+    <>
     <section className="panel">
-      <h2>Repository Setup</h2>
-      <p className="panel-copy">Pick your project folder and run scripts without terminal commands.</p>
+      <h2>Worktree Launcher</h2>
+      <p className="panel-copy">Launch each worktree on its own port and compare your app versions side by side.</p>
 
       <div className="picker-row">
         <button type="button" className="secondary" onClick={handleSelectRepository} disabled={isPicking || isChecking}>
@@ -357,7 +373,7 @@ function MainPage() {
         <input
           id="repo-path"
           value={path}
-          onChange={(event) => setPath(event.currentTarget.value)}
+          onChange={(e) => setPath(e.currentTarget.value)}
           placeholder="/Users/name/projects/your-repo"
         />
         <button type="submit" disabled={isChecking || path.trim().length === 0}>
@@ -426,183 +442,225 @@ function MainPage() {
           {!worktreeError && worktrees.length === 0 && <p className="subtle">No worktrees found.</p>}
 
           <ul className="worktree-list">
-            {worktrees.map((worktree) => (
-              <li
-                key={worktree.path}
-                className={worktree.path === selectedWorktreePath ? "worktree-card selected" : "worktree-card"}
-              >
-                <button
-                  type="button"
-                  className="worktree-select"
-                  onClick={() => {
-                    setSelectedWorktreePath(worktree.path);
-                    setPendingConfirmation(null);
-                    void loadScripts(worktree.path);
-                  }}
-                >
-                  <p>
-                    <strong>{worktree.isMain ? "Main" : "Additional"}</strong>
-                  </p>
-                  <p>
-                    <span className="subtle">Branch:</span> {worktree.branch}
-                  </p>
-                  <p>
-                    <span className="subtle">Path:</span> {worktree.path}
-                  </p>
-                </button>
-              </li>
-            ))}
+            {worktrees.map((worktree) => {
+              const config = appState.launchConfigs[worktree.path];
+              const running = runningWorktrees[worktree.path];
+              const formOpen = openForms[worktree.path] ?? false;
+              const draft = formDrafts[worktree.path];
+              const scripts = worktreeScripts[worktree.path] ?? [];
+              const isLoadingScripts = loadingScripts[worktree.path] ?? false;
+              const launchError = launchErrors[worktree.path];
+              const activeRunId = running?.runId ?? lastRunIds[worktree.path];
+              const logs = activeRunId ? (worktreeLogs[activeRunId] ?? []) : [];
+              const url = running
+                ? `http://localhost:${running.port}`
+                : config
+                  ? `http://localhost:${config.port}`
+                  : null;
+
+              return (
+                <li key={worktree.path} className="worktree-card">
+                  <div className="worktree-card-main">
+                    <div className="worktree-info">
+                      <p>
+                        <strong>{worktree.isMain ? "Main" : "Worktree"}</strong>
+                        {running && (
+                          <>
+                            {" "}
+                            <span className="running-dot" />
+                          </>
+                        )}
+                      </p>
+                      <p>
+                        <span className="subtle">Branch:</span> {worktree.branch}
+                      </p>
+                      <p className="subtle" style={{ wordBreak: "break-all" }}>
+                        {worktree.path}
+                      </p>
+                    </div>
+
+                    <div className="launch-controls">
+                      {running ? (
+                        <div className="launch-status">
+                          <span className="running-indicator">
+                            <span className="running-dot-pulse" />
+                            Running
+                          </span>
+                          <a
+                            className="launch-url"
+                            href={url!}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              void tauriClient.openUrl(url!);
+                            }}
+                          >
+                            {url}
+                          </a>
+                          <div className="launch-actions">
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() => void tauriClient.openUrl(url!)}
+                            >
+                              Open ↗
+                            </button>
+                            <button type="button" className="secondary" onClick={() => void handleStop(worktree)}>
+                              Stop
+                            </button>
+                          </div>
+                        </div>
+                      ) : formOpen ? null : config ? (
+                        <div className="launch-status">
+                          <p className="config-preview">
+                            <strong>{config.scriptName}</strong>
+                            <span className="subtle"> · port {config.port}</span>
+                          </p>
+                          <div className="launch-actions">
+                            <button
+                              type="button"
+                              onClick={() => void launchWorktree(worktree, config.scriptName, config.port)}
+                            >
+                              Launch
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() => void openLaunchForm(worktree)}
+                            >
+                              Edit
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button type="button" onClick={() => void openLaunchForm(worktree)}>
+                          Configure &amp; Launch
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {formOpen && (
+                    <div className="launch-form">
+                      {isLoadingScripts ? (
+                        <p className="subtle">Loading scripts…</p>
+                      ) : (
+                        <>
+                          <div className="launch-form-row">
+                            <label htmlFor={`script-${worktree.path}`}>Script to run</label>
+                            {scripts.length > 0 ? (
+                              <select
+                                id={`script-${worktree.path}`}
+                                value={draft?.scriptName ?? ""}
+                                onChange={(e) => updateDraft(worktree.path, { scriptName: e.currentTarget.value })}
+                              >
+                                {scripts.map((s) => (
+                                  <option key={s.name} value={s.name}>
+                                    {s.name} — {s.command}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                id={`script-${worktree.path}`}
+                                value={draft?.scriptName ?? ""}
+                                onChange={(e) => updateDraft(worktree.path, { scriptName: e.currentTarget.value })}
+                                placeholder="dev"
+                              />
+                            )}
+                          </div>
+
+                          <div className="launch-form-row">
+                            <label htmlFor={`port-${worktree.path}`}>Port</label>
+                            <input
+                              id={`port-${worktree.path}`}
+                              type="number"
+                              min="1024"
+                              max="65535"
+                              value={draft?.port ?? ""}
+                              onChange={(e) => updateDraft(worktree.path, { port: e.currentTarget.value })}
+                            />
+                          </div>
+
+                          {launchError && <p className="launch-form-error">{launchError}</p>}
+
+                          <div className="launch-form-actions">
+                            <button type="button" onClick={() => void handleLaunch(worktree)}>
+                              Launch
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() => closeLaunchForm(worktree.path)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {launchError && !formOpen && (
+                    <p className="launch-card-error">{launchError}</p>
+                  )}
+
+                  {logs.length > 0 && (
+                    <div className="worktree-log">
+                      <h5>{running ? "Console" : "Last run output"}</h5>
+                      <pre ref={(el) => { if (el && running) el.scrollTop = el.scrollHeight; }}>
+                        {logs.join("\n")}
+                      </pre>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
-
-      {selectedWorktree && (
-        <div className="script-block">
-          <div className="worktree-header">
-            <h3>Scripts</h3>
-            <span className="subtle">{selectedWorktree.path}</span>
-          </div>
-
-          {isLoadingScripts && <p className="subtle">Loading scripts...</p>}
-
-          {!isLoadingScripts && scriptError && (
-            <div className="status-card error" role="alert">
-              <h3>Could Not Load Scripts</h3>
-              <p>{scriptError}</p>
-            </div>
-          )}
-
-          {!isLoadingScripts && !scriptError && scripts.length === 0 && (
-            <p className="subtle">No scripts found in this worktree's package.json.</p>
-          )}
-
-          {!isLoadingScripts && !scriptError && scripts.length > 0 && (
-            <ul className="script-list">
-              {scripts.map((script) => {
-                const effectiveManager = appState.preferredPackageManager ?? script.packageManager ?? "npm";
-                return (
-                  <li key={script.name} className="script-card">
-                    <div>
-                      <p>
-                        <strong>{script.name}</strong>
-                      </p>
-                      <p className="subtle">{script.command}</p>
-                      <p className="subtle">Runner: {effectiveManager}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleLaunchRequest(script)}
-                      disabled={runningRunKey !== null}
-                    >
-                      {runningRunKey?.endsWith(`::${script.name}`) ? "Running..." : "Run Script"}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-
-          {pendingConfirmation && selectedWorktree && (
-            <div className="status-card warning" role="alert">
-              <h3>Confirm Risky Script</h3>
-              <p>This script name looks potentially destructive. Confirm before running.</p>
-              <p>
-                <strong>Script:</strong> {pendingConfirmation.script.name}
-              </p>
-              <p>
-                <strong>Command:</strong> {pendingConfirmation.script.command}
-              </p>
-              <p>
-                <strong>Worktree:</strong> {selectedWorktree.path}
-              </p>
-              <p>
-                <strong>Branch:</strong> {selectedWorktree.branch}
-              </p>
-              <p>
-                <strong>Runner:</strong> {pendingConfirmation.effectiveManager}
-              </p>
-              <div className="confirm-actions">
-                <button
-                  type="button"
-                  onClick={() => {
-                    void executeScriptLaunch(pendingConfirmation.script, pendingConfirmation.effectiveManager);
-                    setPendingConfirmation(null);
-                  }}
-                >
-                  Confirm Run
-                </button>
-                <button type="button" className="secondary" onClick={() => setPendingConfirmation(null)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
-          {runningRunKey && (
-            <button type="button" className="secondary" onClick={() => void handleStopScript()}>
-              Stop Script
-            </button>
-          )}
-
-          {launchMessage && <p className="subtle">{launchMessage}</p>}
-
-          {runLogs.length > 0 && (
-            <div className="console-block">
-              <h4>Run Console</h4>
-              <pre>{runLogs.join("\n")}</pre>
-            </div>
-          )}
-
-          {runSummaries.length > 0 && (
-            <div className="summary-block">
-              <h4>Recent Runs</h4>
-              <ul>
-                {runSummaries.map((summary) => (
-                  <li key={summary.runId}>
-                    <strong>{summary.scriptName}</strong> - {summary.status}
-                    {summary.exitCode !== undefined ? ` (exit: ${summary.exitCode})` : ""}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
     </section>
+
+    {toasts.length > 0 && (
+      <div className="toast-container" role="alert" aria-live="assertive">
+        {toasts.map((toast) => (
+          <div key={toast.id} className="toast toast-error">
+            <div className="toast-body">
+              <strong>"{toast.branch}" crashed</strong>
+              <span>
+                <code>{toast.scriptName}</code> exited with code {toast.exitCode}. Check the output in the card.
+              </span>
+            </div>
+            <button type="button" className="toast-dismiss" onClick={() => dismissToast(toast.id)}>
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
+    )}
+    </>
   );
 }
 
-function isRiskyScript(scriptName: string): boolean {
-  return RISK_PATTERNS.some((pattern) => pattern.test(scriptName));
+function suggestNextPort(configs: Record<string, LaunchConfig>): number {
+  const used = new Set(Object.values(configs).map((c) => c.port));
+  let port = 3000;
+  while (used.has(port)) port++;
+  return port;
 }
 
 function toFriendlyMessage(error: unknown): string {
-  if (!(error instanceof Error)) {
-    return "An unexpected error happened. Please try again.";
-  }
-
-  const message = error.message;
-
-  if (message.includes("INVALID_PATH") || message.includes("PATH_NOT_FOUND")) {
+  if (!(error instanceof Error)) return "An unexpected error occurred. Please try again.";
+  const { message } = error;
+  if (message.includes("INVALID_PATH") || message.includes("PATH_NOT_FOUND"))
     return "That folder path is not valid. Select a folder that exists on disk.";
-  }
-
-  if (message.includes("NOT_A_GIT_REPOSITORY")) {
+  if (message.includes("NOT_A_GIT_REPOSITORY"))
     return "This folder is not a Git repository. Pick the project root containing .git.";
-  }
-
-  if (message.includes("GIT_UNAVAILABLE")) {
-    return "Git is not available on this machine. Install Git and reopen the app.";
-  }
-
-  if (message.includes("RUN_ALREADY_ACTIVE")) {
-    return "This script is already running for this worktree.";
-  }
-
-  if (message.includes("SPAWN_FAILED") || message.includes("EXECUTION_FAILED")) {
-    return "Could not start the script. Verify Node and your package manager are installed.";
-  }
-
+  if (message.includes("GIT_UNAVAILABLE"))
+    return "Git is not available. Install Git and reopen the app.";
+  if (message.includes("RUN_ALREADY_ACTIVE"))
+    return "This worktree is already running.";
+  if (message.includes("SPAWN_FAILED") || message.includes("EXECUTION_FAILED"))
+    return "Could not start the server. Verify Node.js and your package manager are installed.";
   return message;
 }
 
