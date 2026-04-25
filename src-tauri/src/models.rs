@@ -36,10 +36,22 @@ pub struct ScriptRunRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ScriptRunStatus {
     pub run_id: String,
+    pub run_key: String,
     pub status: String,
     pub exit_code: Option<i32>,
     pub started_at: String,
     pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptFinishedEvent {
+    pub run_id: String,
+    pub run_key: String,
+    pub worktree_path: String,
+    pub script_name: String,
+    pub exit_code: Option<i32>,
+    pub finished_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

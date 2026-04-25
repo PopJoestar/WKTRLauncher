@@ -1,10 +1,11 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     io::{BufRead, BufReader},
+    os::unix::process::CommandExt,
     path::Path,
     process::{Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -12,16 +13,15 @@ use std::{
 use tauri::{AppHandle, Emitter, State};
 
 use crate::models::{
-    CommandResponse, ScriptInfo, ScriptRunEvent, ScriptRunRequest, ScriptRunStatus,
+    CommandResponse, ScriptFinishedEvent, ScriptInfo, ScriptRunEvent, ScriptRunRequest,
+    ScriptRunStatus,
 };
 
-pub struct ScriptRunStore(pub Mutex<HashSet<String>>);
+#[derive(Clone, Default)]
+pub struct ScriptRunStore(pub Arc<Mutex<HashSet<String>>>);
 
-impl Default for ScriptRunStore {
-    fn default() -> Self {
-        Self(Mutex::new(HashSet::new()))
-    }
-}
+#[derive(Clone, Default)]
+pub struct ChildStore(pub Arc<Mutex<HashMap<String, u32>>>);
 
 #[tauri::command]
 pub fn list_scripts(worktree_path: String) -> CommandResponse<Vec<ScriptInfo>> {
@@ -80,11 +80,12 @@ pub fn run_script(
     app: AppHandle,
     request: ScriptRunRequest,
     run_store: State<'_, ScriptRunStore>,
+    child_store: State<'_, ChildStore>,
 ) -> CommandResponse<ScriptRunStatus> {
     let start = now_string();
 
-    let worktree_path = request.worktree_path.trim();
-    let script_name = request.script_name.trim();
+    let worktree_path = request.worktree_path.trim().to_string();
+    let script_name = request.script_name.trim().to_string();
 
     if worktree_path.is_empty() || script_name.is_empty() {
         return CommandResponse::err(
@@ -93,7 +94,7 @@ pub fn run_script(
         );
     }
 
-    let root = Path::new(worktree_path);
+    let root = Path::new(&worktree_path);
     if !root.exists() || !root.is_dir() {
         return CommandResponse::err("PATH_NOT_FOUND", "Worktree path does not exist or is not a directory.");
     }
@@ -129,45 +130,60 @@ pub fn run_script(
         .package_manager
         .unwrap_or_else(|| detect_package_manager(root).to_string());
 
-    let (command_name, command_args) = command_for(&manager, script_name);
+    let (command_name, command_args) = command_for(&manager, &script_name);
 
     let mut command = Command::new(command_name);
     command
         .args(command_args)
         .current_dir(root)
+        .env("PATH", resolved_path())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .process_group(0);
 
     let mut child = match command.spawn() {
         Ok(value) => value,
         Err(_) => {
-            remove_active_run(&run_store, &run_key);
+            run_store.0.lock().ok().map(|mut g| g.remove(&run_key));
             return CommandResponse::err("SPAWN_FAILED", "Failed to launch script process.");
         }
     };
 
+    let pid = child.id();
+    {
+        let mut guard = child_store.0.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(run_key.clone(), pid);
+    }
+
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    let app_for_stdout = app.clone();
-    let app_for_stderr = app.clone();
-    let run_id_for_stdout = run_id.clone();
-    let run_id_for_stderr = run_id.clone();
-    let path_for_stdout = normalized_path.clone();
-    let path_for_stderr = normalized_path.clone();
-    let script_for_stdout = script_name.to_string();
-    let script_for_stderr = script_name.to_string();
+    let app_stdout = app.clone();
+    let app_stderr = app.clone();
+    let app_wait = app.clone();
+    let run_id_stdout = run_id.clone();
+    let run_id_stderr = run_id.clone();
+    let run_id_wait = run_id.clone();
+    let path_stdout = normalized_path.clone();
+    let path_stderr = normalized_path.clone();
+    let path_wait = normalized_path.clone();
+    let script_stdout = script_name.clone();
+    let script_stderr = script_name.clone();
+    let script_wait = script_name.clone();
+    let run_key_wait = run_key.clone();
+    let run_store_wait = run_store.0.clone();
+    let child_store_wait = child_store.0.clone();
 
     let stdout_thread = stdout.map(|stream| {
         thread::spawn(move || {
             let reader = BufReader::new(stream);
             for line in reader.lines().map_while(Result::ok) {
-                let _ = app_for_stdout.emit(
+                let _ = app_stdout.emit(
                     "script-run-output",
                     ScriptRunEvent {
-                        run_id: run_id_for_stdout.clone(),
-                        worktree_path: path_for_stdout.clone(),
-                        script_name: script_for_stdout.clone(),
+                        run_id: run_id_stdout.clone(),
+                        worktree_path: path_stdout.clone(),
+                        script_name: script_stdout.clone(),
                         stream: "stdout".to_string(),
                         line,
                         timestamp: now_string(),
@@ -181,12 +197,12 @@ pub fn run_script(
         thread::spawn(move || {
             let reader = BufReader::new(stream);
             for line in reader.lines().map_while(Result::ok) {
-                let _ = app_for_stderr.emit(
+                let _ = app_stderr.emit(
                     "script-run-output",
                     ScriptRunEvent {
-                        run_id: run_id_for_stderr.clone(),
-                        worktree_path: path_for_stderr.clone(),
-                        script_name: script_for_stderr.clone(),
+                        run_id: run_id_stderr.clone(),
+                        worktree_path: path_stderr.clone(),
+                        script_name: script_stderr.clone(),
                         stream: "stderr".to_string(),
                         line,
                         timestamp: now_string(),
@@ -196,34 +212,63 @@ pub fn run_script(
         })
     });
 
-    let status = child.wait();
+    thread::spawn(move || {
+        let exit_status = child.wait().ok();
+        let exit_code = exit_status.and_then(|s| s.code());
 
-    if let Some(handle) = stdout_thread {
-        let _ = handle.join();
-    }
-    if let Some(handle) = stderr_thread {
-        let _ = handle.join();
-    }
+        if let Some(handle) = stdout_thread {
+            let _ = handle.join();
+        }
+        if let Some(handle) = stderr_thread {
+            let _ = handle.join();
+        }
 
-    remove_active_run(&run_store, &run_key);
+        run_store_wait.lock().ok().map(|mut g| g.remove(&run_key_wait));
+        child_store_wait.lock().ok().map(|mut g| g.remove(&run_key_wait));
 
-    let finish = now_string();
-    match status {
-        Ok(exit_status) if exit_status.success() => CommandResponse::ok(ScriptRunStatus {
-            run_id,
-            status: "completed".to_string(),
-            exit_code: exit_status.code(),
-            started_at: start,
-            finished_at: Some(finish),
-        }),
-        Ok(exit_status) => CommandResponse::ok(ScriptRunStatus {
-            run_id,
-            status: "failed".to_string(),
-            exit_code: exit_status.code(),
-            started_at: start,
-            finished_at: Some(finish),
-        }),
-        Err(_) => CommandResponse::err("EXECUTION_FAILED", "Script process failed to execute."),
+        let _ = app_wait.emit(
+            "script-run-finished",
+            ScriptFinishedEvent {
+                run_id: run_id_wait,
+                run_key: run_key_wait,
+                worktree_path: path_wait,
+                script_name: script_wait,
+                exit_code,
+                finished_at: now_string(),
+            },
+        );
+    });
+
+    CommandResponse::ok(ScriptRunStatus {
+        run_id,
+        run_key,
+        status: "running".to_string(),
+        exit_code: None,
+        started_at: start,
+        finished_at: None,
+    })
+}
+
+#[tauri::command]
+pub fn stop_script(
+    run_key: String,
+    child_store: State<'_, ChildStore>,
+) -> CommandResponse<()> {
+    let pid = {
+        let guard = match child_store.0.lock() {
+            Ok(g) => g,
+            Err(_) => return CommandResponse::err("CHILD_STATE_UNAVAILABLE", "Child state is unavailable."),
+        };
+        guard.get(&run_key).copied()
+    };
+
+    if let Some(pid) = pid {
+        let _ = Command::new("kill")
+            .args(["-9", &format!("-{pid}")])
+            .spawn();
+        CommandResponse::ok(())
+    } else {
+        CommandResponse::err("NOT_RUNNING", "No active script found for this run key.")
     }
 }
 
@@ -233,12 +278,6 @@ fn command_for(manager: &str, script_name: &str) -> (&'static str, Vec<String>) 
         "yarn" => ("yarn", vec!["run".to_string(), script_name.to_string()]),
         "npm" => ("npm", vec!["run".to_string(), script_name.to_string()]),
         _ => ("npm", vec!["run".to_string(), script_name.to_string()]),
-    }
-}
-
-fn remove_active_run(run_store: &State<'_, ScriptRunStore>, run_key: &str) {
-    if let Ok(mut guard) = run_store.0.lock() {
-        guard.remove(run_key);
     }
 }
 
@@ -252,6 +291,18 @@ fn detect_package_manager(root: &Path) -> &'static str {
     } else {
         "npm"
     }
+}
+
+fn resolved_path() -> String {
+    let prefixes = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+    ];
+    let existing = std::env::var("PATH")
+        .unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".to_string());
+    format!("{}:{existing}", prefixes.join(":"))
 }
 
 fn now_string() -> String {

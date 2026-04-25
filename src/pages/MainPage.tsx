@@ -6,7 +6,7 @@ import {
   RUN_SUMMARY_CACHE_KEY,
 } from "../lib/cacheKeys";
 import { tauriClient } from "../lib/tauriClient";
-import type { AppState, RepositoryInfo, ScriptInfo, ScriptRunEvent, ScriptRunStatus, WorktreeInfo } from "../models/domain";
+import type { AppState, RepositoryInfo, ScriptFinishedEvent, ScriptInfo, ScriptRunEvent, WorktreeInfo } from "../models/domain";
 
 const EMPTY_STATE: AppState = {
   recentRepositories: [],
@@ -103,6 +103,36 @@ function MainPage() {
         if (!active) return;
         const line = `[${event.stream}] ${event.line}`;
         setRunLogs((previous) => [...previous.slice(-249), line]);
+      })
+      .then((unlisten) => {
+        cleanup = unlisten;
+      });
+
+    return () => {
+      active = false;
+      if (cleanup) cleanup();
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    let cleanup: (() => void) | null = null;
+
+    void tauriClient
+      .onScriptRunFinished((event: ScriptFinishedEvent) => {
+        if (!active) return;
+        setRunningRunKey((current) => (current === event.runKey ? null : current));
+        const exitInfo = event.exitCode !== undefined ? ` (exit: ${event.exitCode})` : "";
+        setLaunchMessage(`Script "${event.scriptName}" finished${exitInfo}.`);
+        const summary: RunSummary = {
+          runId: event.runId,
+          scriptName: event.scriptName,
+          worktreePath: event.worktreePath,
+          status: event.exitCode === 0 ? "completed" : "failed",
+          exitCode: event.exitCode,
+          finishedAt: event.finishedAt,
+        };
+        setRunSummaries((previous) => [summary, ...previous].slice(0, 12));
       })
       .then((unlisten) => {
         cleanup = unlisten;
@@ -275,30 +305,27 @@ function MainPage() {
     setLaunchMessage(null);
     setRunLogs([]);
 
-    const runKey = `${selectedWorktree.path}::${script.name}`;
-    setRunningRunKey(runKey);
-
     try {
-      const result: ScriptRunStatus = await tauriClient.runScript({
+      const result = await tauriClient.runScript({
         worktreePath: selectedWorktree.path,
         scriptName: script.name,
         packageManager: effectiveManager,
       });
 
-      setLaunchMessage(`Run status for \"${script.name}\": ${result.status}`);
-      const summary: RunSummary = {
-        runId: result.runId,
-        scriptName: script.name,
-        worktreePath: selectedWorktree.path,
-        status: result.status,
-        exitCode: result.exitCode,
-        finishedAt: result.finishedAt,
-      };
-      setRunSummaries((previous) => [summary, ...previous].slice(0, 12));
+      setRunningRunKey(result.runKey);
+      setLaunchMessage(`Script "${script.name}" started.`);
     } catch (runError) {
-      setLaunchMessage(toFriendlyMessage(runError));
-    } finally {
       setRunningRunKey(null);
+      setLaunchMessage(toFriendlyMessage(runError));
+    }
+  }
+
+  async function handleStopScript() {
+    if (!runningRunKey) return;
+    try {
+      await tauriClient.stopScript(runningRunKey);
+    } catch {
+      setLaunchMessage("Failed to stop the script.");
     }
   }
 
@@ -453,7 +480,6 @@ function MainPage() {
             <ul className="script-list">
               {scripts.map((script) => {
                 const effectiveManager = appState.preferredPackageManager ?? script.packageManager ?? "npm";
-                const runKey = `${selectedWorktree.path}::${script.name}`;
                 return (
                   <li key={script.name} className="script-card">
                     <div>
@@ -463,8 +489,12 @@ function MainPage() {
                       <p className="subtle">{script.command}</p>
                       <p className="subtle">Runner: {effectiveManager}</p>
                     </div>
-                    <button type="button" onClick={() => handleLaunchRequest(script)} disabled={runningRunKey === runKey}>
-                      {runningRunKey === runKey ? "Running..." : "Run Script"}
+                    <button
+                      type="button"
+                      onClick={() => handleLaunchRequest(script)}
+                      disabled={runningRunKey !== null}
+                    >
+                      {runningRunKey?.endsWith(`::${script.name}`) ? "Running..." : "Run Script"}
                     </button>
                   </li>
                 );
@@ -506,6 +536,12 @@ function MainPage() {
                 </button>
               </div>
             </div>
+          )}
+
+          {runningRunKey && (
+            <button type="button" className="secondary" onClick={() => void handleStopScript()}>
+              Stop Script
+            </button>
           )}
 
           {launchMessage && <p className="subtle">{launchMessage}</p>}

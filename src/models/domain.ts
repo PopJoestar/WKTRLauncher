@@ -24,10 +24,20 @@ export interface ScriptRunRequest {
 
 export interface ScriptRunStatus {
   runId: string;
+  runKey: string;
   status: "idle" | "running" | "completed" | "failed" | "notImplemented";
   exitCode?: number;
   startedAt: string;
   finishedAt?: string;
+}
+
+export interface ScriptFinishedEvent {
+  runId: string;
+  runKey: string;
+  worktreePath: string;
+  scriptName: string;
+  exitCode?: number;
+  finishedAt: string;
 }
 
 export interface AppState {

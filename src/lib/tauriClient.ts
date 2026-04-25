@@ -4,6 +4,7 @@ import type {
   AppState,
   CommandResponse,
   RepositoryInfo,
+  ScriptFinishedEvent,
   ScriptInfo,
   ScriptRunEvent,
   ScriptRunRequest,
@@ -48,6 +49,10 @@ export const tauriClient = {
     return invokeCommand("run_script", { request });
   },
 
+  stopScript(runKey: string): Promise<void> {
+    return invokeCommand("stop_script", { runKey });
+  },
+
   getAppState(): Promise<AppState> {
     return invokeCommand("get_app_state");
   },
@@ -58,5 +63,9 @@ export const tauriClient = {
 
   onScriptRunOutput(handler: (event: ScriptRunEvent) => void): Promise<UnlistenFn> {
     return listen<ScriptRunEvent>(SCRIPT_RUN_EVENT, ({ payload }) => handler(payload));
+  },
+
+  onScriptRunFinished(handler: (event: ScriptFinishedEvent) => void): Promise<UnlistenFn> {
+    return listen<ScriptFinishedEvent>("script-run-finished", ({ payload }) => handler(payload));
   },
 };
