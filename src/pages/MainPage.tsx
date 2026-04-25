@@ -442,7 +442,7 @@ function MainPage() {
           {!worktreeError && worktrees.length === 0 && <p className="subtle">No worktrees found.</p>}
 
           <ul className="worktree-list">
-            {worktrees.map((worktree) => {
+            {worktrees.filter((w) => w.branch !== "(detached)").map((worktree) => {
               const config = appState.launchConfigs[worktree.path];
               const running = runningWorktrees[worktree.path];
               const formOpen = openForms[worktree.path] ?? false;
