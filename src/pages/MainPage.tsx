@@ -1,10 +1,18 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  APP_STATE_UPDATED_EVENT,
+  RUN_CACHE_CLEARED_EVENT,
+  RUN_LOG_CACHE_KEY,
+  RUN_SUMMARY_CACHE_KEY,
+} from "../lib/cacheKeys";
 import { tauriClient } from "../lib/tauriClient";
 import type { AppState, RepositoryInfo, ScriptInfo, ScriptRunEvent, ScriptRunStatus, WorktreeInfo } from "../models/domain";
 
 const EMPTY_STATE: AppState = {
   recentRepositories: [],
 };
+
+const RISK_PATTERNS = [/clean/i, /reset/i, /migrate/i, /drop/i, /destroy/i];
 
 type RunSummary = {
   runId: string;
@@ -13,6 +21,11 @@ type RunSummary = {
   status: string;
   exitCode?: number;
   finishedAt?: string;
+};
+
+type PendingConfirmation = {
+  script: ScriptInfo;
+  effectiveManager: string;
 };
 
 function MainPage() {
@@ -29,6 +42,7 @@ function MainPage() {
   const [launchMessage, setLaunchMessage] = useState<string | null>(null);
   const [runLogs, setRunLogs] = useState<string[]>([]);
   const [runSummaries, setRunSummaries] = useState<RunSummary[]>([]);
+  const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
   const [isRefreshingWorktrees, setIsRefreshingWorktrees] = useState(false);
@@ -41,16 +55,58 @@ function MainPage() {
   );
 
   useEffect(() => {
+    try {
+      const rawLogs = localStorage.getItem(RUN_LOG_CACHE_KEY);
+      if (rawLogs) setRunLogs(JSON.parse(rawLogs) as string[]);
+      const rawSummary = localStorage.getItem(RUN_SUMMARY_CACHE_KEY);
+      if (rawSummary) setRunSummaries(JSON.parse(rawSummary) as RunSummary[]);
+    } catch {
+      setRunLogs([]);
+      setRunSummaries([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(RUN_LOG_CACHE_KEY, JSON.stringify(runLogs.slice(-250)));
+  }, [runLogs]);
+
+  useEffect(() => {
+    localStorage.setItem(RUN_SUMMARY_CACHE_KEY, JSON.stringify(runSummaries.slice(0, 12)));
+  }, [runSummaries]);
+
+  useEffect(() => {
+    function handleRunCacheCleared() {
+      setRunLogs([]);
+      setRunSummaries([]);
+      setLaunchMessage("Run cache was cleared from Settings.");
+    }
+
+    function handleStateUpdated() {
+      void tauriClient.getAppState().then(setAppState);
+    }
+
+    window.addEventListener(RUN_CACHE_CLEARED_EVENT, handleRunCacheCleared);
+    window.addEventListener(APP_STATE_UPDATED_EVENT, handleStateUpdated);
+
+    return () => {
+      window.removeEventListener(RUN_CACHE_CLEARED_EVENT, handleRunCacheCleared);
+      window.removeEventListener(APP_STATE_UPDATED_EVENT, handleStateUpdated);
+    };
+  }, []);
+
+  useEffect(() => {
     let active = true;
     let cleanup: (() => void) | null = null;
 
-    void tauriClient.onScriptRunOutput((event: ScriptRunEvent) => {
-      if (!active) return;
-      const line = `[${event.stream}] ${event.line}`;
-      setRunLogs((previous) => [...previous.slice(-249), line]);
-    }).then((unlisten) => {
-      cleanup = unlisten;
-    });
+    void tauriClient
+      .onScriptRunOutput((event: ScriptRunEvent) => {
+        if (!active) return;
+        const line = `[${event.stream}] ${event.line}`;
+        setRunLogs((previous) => [...previous.slice(-249), line]);
+      })
+      .then((unlisten) => {
+        cleanup = unlisten;
+      });
 
     return () => {
       active = false;
@@ -68,7 +124,7 @@ function MainPage() {
       setScripts(items);
     } catch (loadError) {
       setScripts([]);
-      setScriptError(loadError instanceof Error ? loadError.message : "Unable to load scripts.");
+      setScriptError(toFriendlyMessage(loadError));
     } finally {
       setIsLoadingScripts(false);
     }
@@ -97,7 +153,7 @@ function MainPage() {
       setWorktrees([]);
       setScripts([]);
       setSelectedWorktreePath(null);
-      setWorktreeError(refreshError instanceof Error ? refreshError.message : "Unable to load worktrees.");
+      setWorktreeError(toFriendlyMessage(refreshError));
     } finally {
       setIsRefreshingWorktrees(false);
     }
@@ -171,6 +227,7 @@ function MainPage() {
     setWorktrees([]);
     setScripts([]);
     setSelectedWorktreePath(null);
+    setPendingConfirmation(null);
     setIsChecking(true);
 
     try {
@@ -187,7 +244,7 @@ function MainPage() {
       setWorktrees([]);
       setScripts([]);
       setSelectedWorktreePath(null);
-      setError(validationError instanceof Error ? validationError.message : "Unknown validation error");
+      setError(toFriendlyMessage(validationError));
     } finally {
       setIsChecking(false);
     }
@@ -212,7 +269,7 @@ function MainPage() {
     await validateAndPersist(path);
   }
 
-  async function handleLaunchScript(script: ScriptInfo) {
+  async function executeScriptLaunch(script: ScriptInfo, effectiveManager: string) {
     if (!selectedWorktree) return;
 
     setLaunchMessage(null);
@@ -225,7 +282,7 @@ function MainPage() {
       const result: ScriptRunStatus = await tauriClient.runScript({
         worktreePath: selectedWorktree.path,
         scriptName: script.name,
-        packageManager: script.packageManager,
+        packageManager: effectiveManager,
       });
 
       setLaunchMessage(`Run status for \"${script.name}\": ${result.status}`);
@@ -239,18 +296,28 @@ function MainPage() {
       };
       setRunSummaries((previous) => [summary, ...previous].slice(0, 12));
     } catch (runError) {
-      setLaunchMessage(runError instanceof Error ? runError.message : "Script launch failed.");
+      setLaunchMessage(toFriendlyMessage(runError));
     } finally {
       setRunningRunKey(null);
     }
   }
 
+  function handleLaunchRequest(script: ScriptInfo) {
+    if (!selectedWorktree) return;
+    const effectiveManager = appState.preferredPackageManager ?? script.packageManager ?? "npm";
+
+    if (isRiskyScript(script.name)) {
+      setPendingConfirmation({ script, effectiveManager });
+      return;
+    }
+
+    void executeScriptLaunch(script, effectiveManager);
+  }
+
   return (
     <section className="panel">
       <h2>Repository Setup</h2>
-      <p className="panel-copy">
-        Choose a repository folder, validate it, and resume quickly from recent selections.
-      </p>
+      <p className="panel-copy">Pick your project folder and run scripts without terminal commands.</p>
 
       <div className="picker-row">
         <button type="button" className="secondary" onClick={handleSelectRepository} disabled={isPicking || isChecking}>
@@ -267,7 +334,7 @@ function MainPage() {
           placeholder="/Users/name/projects/your-repo"
         />
         <button type="submit" disabled={isChecking || path.trim().length === 0}>
-          {isChecking ? "Validating..." : "Validate repository"}
+          {isChecking ? "Checking..." : "Validate Repository"}
         </button>
       </form>
 
@@ -288,7 +355,7 @@ function MainPage() {
 
       {repository && (
         <div className="status-card success" role="status">
-          <h3>Repository Detected</h3>
+          <h3>Repository Ready</h3>
           <p>
             <strong>Name:</strong> {repository.name}
           </p>
@@ -300,7 +367,7 @@ function MainPage() {
 
       {error && (
         <div className="status-card error" role="alert">
-          <h3>Validation Failed</h3>
+          <h3>Could Not Open Repository</h3>
           <p>{error}</p>
         </div>
       )}
@@ -324,7 +391,7 @@ function MainPage() {
 
           {worktreeError && (
             <div className="status-card error" role="alert">
-              <h3>Worktree Refresh Failed</h3>
+              <h3>Could Not Refresh Worktrees</h3>
               <p>{worktreeError}</p>
             </div>
           )}
@@ -342,6 +409,7 @@ function MainPage() {
                   className="worktree-select"
                   onClick={() => {
                     setSelectedWorktreePath(worktree.path);
+                    setPendingConfirmation(null);
                     void loadScripts(worktree.path);
                   }}
                 >
@@ -364,7 +432,7 @@ function MainPage() {
       {selectedWorktree && (
         <div className="script-block">
           <div className="worktree-header">
-            <h3>Scripts for Selected Worktree</h3>
+            <h3>Scripts</h3>
             <span className="subtle">{selectedWorktree.path}</span>
           </div>
 
@@ -372,36 +440,72 @@ function MainPage() {
 
           {!isLoadingScripts && scriptError && (
             <div className="status-card error" role="alert">
-              <h3>Script Discovery Failed</h3>
+              <h3>Could Not Load Scripts</h3>
               <p>{scriptError}</p>
             </div>
           )}
 
           {!isLoadingScripts && !scriptError && scripts.length === 0 && (
-            <p className="subtle">This worktree has no package scripts in package.json.</p>
+            <p className="subtle">No scripts found in this worktree's package.json.</p>
           )}
 
           {!isLoadingScripts && !scriptError && scripts.length > 0 && (
             <ul className="script-list">
-              {scripts.map((script) => (
-                <li key={script.name} className="script-card">
-                  <div>
-                    <p>
-                      <strong>{script.name}</strong>
-                    </p>
-                    <p className="subtle">{script.command}</p>
-                    <p className="subtle">Manager: {script.packageManager ?? "npm"}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleLaunchScript(script)}
-                    disabled={runningRunKey === `${selectedWorktree.path}::${script.name}`}
-                  >
-                    {runningRunKey === `${selectedWorktree.path}::${script.name}` ? "Running..." : "Run Script"}
-                  </button>
-                </li>
-              ))}
+              {scripts.map((script) => {
+                const effectiveManager = appState.preferredPackageManager ?? script.packageManager ?? "npm";
+                const runKey = `${selectedWorktree.path}::${script.name}`;
+                return (
+                  <li key={script.name} className="script-card">
+                    <div>
+                      <p>
+                        <strong>{script.name}</strong>
+                      </p>
+                      <p className="subtle">{script.command}</p>
+                      <p className="subtle">Runner: {effectiveManager}</p>
+                    </div>
+                    <button type="button" onClick={() => handleLaunchRequest(script)} disabled={runningRunKey === runKey}>
+                      {runningRunKey === runKey ? "Running..." : "Run Script"}
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
+          )}
+
+          {pendingConfirmation && selectedWorktree && (
+            <div className="status-card warning" role="alert">
+              <h3>Confirm Risky Script</h3>
+              <p>This script name looks potentially destructive. Confirm before running.</p>
+              <p>
+                <strong>Script:</strong> {pendingConfirmation.script.name}
+              </p>
+              <p>
+                <strong>Command:</strong> {pendingConfirmation.script.command}
+              </p>
+              <p>
+                <strong>Worktree:</strong> {selectedWorktree.path}
+              </p>
+              <p>
+                <strong>Branch:</strong> {selectedWorktree.branch}
+              </p>
+              <p>
+                <strong>Runner:</strong> {pendingConfirmation.effectiveManager}
+              </p>
+              <div className="confirm-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void executeScriptLaunch(pendingConfirmation.script, pendingConfirmation.effectiveManager);
+                    setPendingConfirmation(null);
+                  }}
+                >
+                  Confirm Run
+                </button>
+                <button type="button" className="secondary" onClick={() => setPendingConfirmation(null)}>
+                  Cancel
+                </button>
+              </div>
+            </div>
           )}
 
           {launchMessage && <p className="subtle">{launchMessage}</p>}
@@ -430,6 +534,40 @@ function MainPage() {
       )}
     </section>
   );
+}
+
+function isRiskyScript(scriptName: string): boolean {
+  return RISK_PATTERNS.some((pattern) => pattern.test(scriptName));
+}
+
+function toFriendlyMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "An unexpected error happened. Please try again.";
+  }
+
+  const message = error.message;
+
+  if (message.includes("INVALID_PATH") || message.includes("PATH_NOT_FOUND")) {
+    return "That folder path is not valid. Select a folder that exists on disk.";
+  }
+
+  if (message.includes("NOT_A_GIT_REPOSITORY")) {
+    return "This folder is not a Git repository. Pick the project root containing .git.";
+  }
+
+  if (message.includes("GIT_UNAVAILABLE")) {
+    return "Git is not available on this machine. Install Git and reopen the app.";
+  }
+
+  if (message.includes("RUN_ALREADY_ACTIVE")) {
+    return "This script is already running for this worktree.";
+  }
+
+  if (message.includes("SPAWN_FAILED") || message.includes("EXECUTION_FAILED")) {
+    return "Could not start the script. Verify Node and your package manager are installed.";
+  }
+
+  return message;
 }
 
 export default MainPage;

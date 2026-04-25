@@ -242,6 +242,24 @@ button:disabled {
   gap: 12px;
 }
 
+.settings-group {
+  margin-top: 18px;
+  display: grid;
+  gap: 10px;
+}
+
+.settings-group h3 {
+  margin: 0;
+}
+
+.settings-group select {
+  border: 1px solid #c0d1e4;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+  background: white;
+}
+
 .console-block,
 .summary-block {
   margin-top: 8px;
@@ -294,6 +312,17 @@ button:disabled {
 .status-card.error {
   background-color: #fff1f1;
   border-color: #ffbdbd;
+}
+
+.status-card.warning {
+  background-color: #fff8e5;
+  border-color: #f1d38f;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
 }
 
 .subtle {

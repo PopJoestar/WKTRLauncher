@@ -2,8 +2,8 @@
 name: git-worktree-script-launcher
 status: backlog
 created: 2026-04-25T13:54:07Z
-updated: 2026-04-25T14:30:19Z
-progress: 62%
+updated: 2026-04-25T14:33:08Z
+progress: 75%
 prd: .claude/prds/git-worktree-script-launcher.md
 github: https://github.com/PopJoestar/WKTRLauncher/issues/1
 ---
