@@ -2,7 +2,7 @@
 issue: 2
 stream: full-implementation
 started: 2026-04-25T14:10:48Z
-status: in_progress
+status: completed
 ---
 ## Scope
 Scaffolded app shell, typed frontend client, and backend command modules for issue #2.
